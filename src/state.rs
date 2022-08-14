@@ -1,5 +1,6 @@
 use crate::camera::{Camera, CameraController, CameraUniform, Projection};
 use crate::instance::Instance;
+use crate::light::{Light, LightUniform};
 use crate::model::{self, DrawModel, Vertex};
 use crate::resources;
 use crate::texture::Texture;
@@ -56,6 +57,12 @@ pub struct State {
     depth_pipeline: wgpu::RenderPipeline,
     obj_model: model::Model,
     last_frame_texture: Texture,
+    frame_count: f32,
+    frame_count_buffer: wgpu::Buffer,
+    utils_bind_group: wgpu::BindGroup,
+    lights_bind_group: wgpu::BindGroup,
+    lights: Vec<Light>,
+    lights_buffer: wgpu::Buffer,
 }
 
 impl State {
@@ -67,7 +74,7 @@ impl State {
         let surface = unsafe { instance.create_surface(window) };
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
@@ -443,6 +450,80 @@ impl State {
 
         let camera_controller = CameraController::new(8.0, 0.002);
 
+        let frame_count_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("camera_buffer"),
+            contents: bytemuck::bytes_of(&0.0f32),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let utils_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("utils_bind_group_layout"),
+            });
+
+        let utils_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &utils_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: frame_count_buffer.as_entire_binding(),
+            }],
+            label: Some("utils_bind_group"),
+        });
+
+        let lights = vec![Light {
+            position: (5.0, 5.0, 5.0).into(),
+            colour: [1.0, 0.8, 0.8],
+            strength: 1.0,
+            radius: 1.0,
+        }];
+
+        let mut lights_uniform = Vec::new();
+        for light in &lights {
+            let mut uniform = LightUniform::new();
+            uniform.update_values(&light);
+            lights_uniform.push(uniform);
+        }
+
+        let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("lights_buffer"),
+            contents: bytemuck::cast_slice(&lights_uniform),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let lights_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("lights_bind_group_layout"),
+            });
+
+        let lights_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &lights_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: lights_buffer.as_entire_binding(),
+            }],
+            label: Some("lights_bind_group"),
+        });
+
         let geometry_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Geometry Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("geometry.wgsl").into()),
@@ -480,7 +561,12 @@ impl State {
         let fullscreen_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Fullscreen Pipeline Layout"),
-                bind_group_layouts: &[&fullscreen_bind_group_layout, &camera_bind_group_layout],
+                bind_group_layouts: &[
+                    &fullscreen_bind_group_layout,
+                    &camera_bind_group_layout,
+                    &utils_bind_group_layout,
+                    &lights_bind_group_layout,
+                ],
                 push_constant_ranges: &[],
             });
 
@@ -776,6 +862,12 @@ impl State {
             depth_pipeline,
             obj_model,
             last_frame_texture,
+            frame_count: 0.0,
+            frame_count_buffer,
+            utils_bind_group,
+            lights_bind_group,
+            lights,
+            lights_buffer,
         }
     }
 
@@ -827,6 +919,17 @@ impl State {
     }
 
     pub fn update(&mut self, dt: std::time::Duration) {
+        let mut lights_uniform = Vec::new();
+        for light in &self.lights {
+            let mut uniform = LightUniform::new();
+            uniform.update_values(&light);
+            lights_uniform.push(uniform);
+        }
+        self.queue.write_buffer(
+            &self.lights_buffer,
+            0,
+            bytemuck::cast_slice(&*lights_uniform),
+        );
         self.camera_controller.update_camera(&mut self.camera, dt);
         self.camera_uniform
             .update_view_proj(&self.camera, &self.camera_projection);
@@ -835,6 +938,11 @@ impl State {
             0,
             bytemuck::cast_slice(&[self.camera_uniform]),
         );
+        self.queue.write_buffer(
+            &self.frame_count_buffer,
+            0,
+            bytemuck::bytes_of(&self.frame_count),
+        )
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -970,6 +1078,8 @@ impl State {
             fullscreen_pass.set_pipeline(&self.fullscreen_pipeline);
             fullscreen_pass.set_bind_group(0, &self.fullscreen_bind_group, &[]);
             fullscreen_pass.set_bind_group(1, &self.camera_bind_group, &[]);
+            fullscreen_pass.set_bind_group(2, &self.utils_bind_group, &[]);
+            fullscreen_pass.set_bind_group(3, &self.lights_bind_group, &[]);
             fullscreen_pass.set_vertex_buffer(0, self.fullscreen_vertex_buffer.slice(..));
             fullscreen_pass.set_index_buffer(
                 self.fullscreen_index_buffer.slice(..),
@@ -1000,7 +1110,7 @@ impl State {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
-
+        self.frame_count += 1.0;
         Ok(())
     }
 }

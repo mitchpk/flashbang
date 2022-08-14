@@ -1,8 +1,9 @@
 // Vertex shader
-
 struct CameraUniform {
-    view_pos: vec4<f32>,
-    view_proj: mat4x4<f32>,
+    proj: mat4x4<f32>,
+    proj_inv: mat4x4<f32>,
+    view: mat4x4<f32>,
+    pos: vec4<f32>,
 };
 @group(1)
 @binding(0)
@@ -41,7 +42,7 @@ fn vs_main(
 
     var out: VertexOutput;
     out.tex_coords = model.tex_coords;
-    out.clip_position = camera.view_proj * world_position;
+    out.clip_position = camera.proj * camera.view * world_position;
     return out;
 }
 

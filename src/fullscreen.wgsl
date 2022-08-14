@@ -25,6 +25,16 @@ fn vs_main(
 
 // Fragment shader
 
+struct Light {
+    position: vec3<f32>,
+    colour: vec3<f32>,
+    strength: f32,
+    radius: f32,
+}
+@group(3)
+@binding(0)
+var<storage, read> lights: array<Light>;
+
 struct FragmentInput {
     @location(0) tex_coords: vec2<f32>,
 };
@@ -71,6 +81,10 @@ var t_skybox: texture_cube<f32>;
 @binding(11)
 var s_skybox: sampler;
 
+@group(2)
+@binding(0)
+var<uniform> frame_count: f32;
+
 let near: f32 = 0.1; 
 let far: f32  = 100.0; 
   
@@ -93,7 +107,7 @@ fn cos_hemisphere(rand: vec2<f32>, normal: vec3<f32>) -> vec3<f32> {
     let tangent = cross(bitangent, normal);
     let r = sqrt(rand.x);
     let phi = 2.0 * 3.14159265 * rand.y;
-
+    
     return tangent * (r * cos(phi)) + bitangent * (r * sin(phi)) + normal * sqrt(max(0.0, 1.0 - rand.x));
 }
 
@@ -102,8 +116,7 @@ fn sample_light(position: vec3<f32>, direction: vec3<f32>, offset: vec3<f32>) ->
     var step_size = 0.01;
     for (var s = 0; s < 12; s++) {
         position += normalize(direction) * step_size;
-        //position += vec3<f32>(1.0, 1.0, 0.0);
-        var clip_pos = camera.view * vec4<f32>(position, 1.0);
+        var clip_pos = camera.proj * camera.view * vec4<f32>(position, 1.0);
         var ndc_pos = clip_pos.xyz / clip_pos.w;
         ndc_pos.y = -ndc_pos.y;
         var screen_pos = (ndc_pos.xyz + 1.0) / 2.0;
@@ -111,21 +124,27 @@ fn sample_light(position: vec3<f32>, direction: vec3<f32>, offset: vec3<f32>) ->
             break; 
         }
         var screen_depth = linearize_depth(ndc_pos.z);
-        //return depth;
         var light = textureSample(t_last_frame, s_last_frame, screen_pos.xy);
         var depth = textureSample(t_depth, s_depth, screen_pos.xy);
         var normal = textureSample(t_normal, s_normal, screen_pos.xy);
         var backface = clamp(dot(-normal.xyz, direction) * 100.0, 0.0, 1.0);
+;
         if (screen_depth > depth.r && screen_depth < depth.g) {
             return light.r * backface;
+        } else if (screen_depth > depth.b && screen_depth < depth.a) {
+            return 0.0;
         }
         step_size *= 2.0;
     }
-    return (dot(direction, vec3<f32>(0.0, 1.0, 0.0)) + 1.0) / 2.0;
+    return 0.0;
 }
 
 fn noise(pos: vec2<f32>) -> f32 {
-    return (52.9829189 * ((0.06711056 * pos.x + 0.00583715 * pos.y) % 1.0)) % 1.0;
+    let frame = frame_count % 64.0;
+    let frame = 0.0;
+    let x = pos.x + 5.588238f * frame;
+    let y = pos.y + 5.588238f * frame;
+    return (52.9829189 * ((0.06711056 * x + 0.00583715 * y) % 1.0)) % 1.0;
 }
 
 @fragment
@@ -139,15 +158,10 @@ fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
 
     let inv_model_view = transpose(mat3x3<f32>(camera.view.x.xyz, camera.view.y.xyz, camera.view.z.xyz));
     let unprojected = camera.proj_inv * vec4<f32>(in.tex_coords * 2.0 - 1.0, 1.0, 1.0);
-    //var total_light = sample_light(position, vec3<f32>(1.0, 1.0, 1.0), normal, depth.r) +
-    //    sample_light(position, vec3<f32>(1.0, 1.0, -1.0), normal, depth.r) +
-    //    sample_light(position, vec3<f32>(1.0, -1.0, 1.0), normal, depth.r) +
-    //    sample_light(position, vec3<f32>(1.0, -1.0, -1.0), normal, depth.r) +
-    //    sample_light(position, vec3<f32>(-1.0, 1.0, 1.0), normal, depth.r) +
-    //    sample_light(position, vec3<f32>(-1.0, 1.0, -1.0), normal, depth.r) +
-    //    sample_light(position, vec3<f32>(-1.0, -1.0, 1.0), normal, depth.r) +
-    //    sample_light(position, vec3<f32>(-1.0, -1.0, -1.0), normal, depth.r);
-    //total_light /= 8.0;
+    var albedo = vec3<f32>((dot(normal, vec3<f32>(0.0, 1.0, 0.0)) + 1.0) / 2.0);
+    for (var i: i32 = 0; i < i32(arrayLength(&lights)); i++) {
+        albedo = albedo + lights[i].colour * 0.5;
+    }
     //return vec4<f32>(vec3<f32>(total_light), 1.0);
     //return vec4<f32>(depth.g - depth.r, depth.a - depth.b, 0.0, 1.0);
     //return depth;
@@ -157,21 +171,9 @@ fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
     //var screen_pos = (ndc_pos.xyz + 1.0) / 2.0;
     //var screen_depth = linearize_depth(ndc_pos.z);
     //return vec4<f32>(vec3<f32>(depth.r), 1.0);
-    //return vec4<f32>(vec3<f32>(sample_light(position, weighted_normal, normal * (0.001 + depth.r * 0.1))), 1.0);
-    return textureSample(t_skybox, s_skybox, inv_model_view * unprojected.xyz);
+    return vec4<f32>(albedo + vec3<f32>(sample_light(position, weighted_normal, normal * (0.001 + depth.r * 0.1))), 1.0);
+    //return textureSample(t_skybox, s_skybox, inv_model_view * unprojected.xyz);
     //return vec4<f32>((weighted_normal + 1.0) / 2.0, 1.0);
-    //if (in.tex_coords.x < 0.5) {
-    //    return vec4<f32>(vec3<f32>(screen_depth), 1.0);
-    //} else {
-    //    return vec4<f32>(vec3<f32>(depth.r), 1.0);
-    //}
     //return vec4<f32>((normal + 1.0) / 2.0, 1.0);
-    //return depth / 100.0;
     //return vec4<f32>(in.tex_coords, 0.0, 1.0);
-    //return textureSample(t_albedo, s_albedo, screen_pos);
-    //if (in.tex_coords.x < 0.5) {
-    //    return vec4<f32>(screen_pos.xy, 0.0, 1.0);
-    //} else {
-    //    return vec4<f32>(in.tex_coords.xy, 0.0, 1.0);
-    //}
 }

@@ -5,6 +5,7 @@ mod camera;
 mod instance;
 mod texture;
 
+mod light;
 mod model;
 mod resources;
 
@@ -55,6 +56,7 @@ fn main() {
                 let now = std::time::Instant::now();
                 let dt = now - last_render_time;
                 last_render_time = now;
+                //std::thread::sleep(std::time::Duration::from_millis(30));
                 state.update(dt);
                 match state.render() {
                     Ok(_) => {}
