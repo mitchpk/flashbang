@@ -6,7 +6,7 @@ use crate::resources;
 use crate::texture::Texture;
 use cgmath::{InnerSpace, Rotation3};
 use wgpu::util::DeviceExt;
-use winit::event::{DeviceEvent, ElementState, KeyboardInput};
+use winit::event::{DeviceEvent, ElementState, Event, KeyboardInput, WindowEvent};
 use winit::window::Window;
 
 const NUM_INSTANCES_PER_ROW: u32 = 10;
@@ -891,28 +891,41 @@ impl State {
         }
     }
 
-    pub fn input(&mut self, event: &DeviceEvent) -> bool {
+    pub fn input<T>(&mut self, event: &Event<T>) -> bool {
         match event {
-            DeviceEvent::Key(KeyboardInput {
-                virtual_keycode: Some(key),
-                state,
-                ..
-            }) => self.camera_controller.process_keyboard(*key, *state),
-
-            DeviceEvent::Button {
-                button: 1, // Left mouse button
-                state,
-            } => {
-                self.mouse_pressed = *state == ElementState::Pressed;
-                true
-            }
-
-            DeviceEvent::MouseMotion { delta } => {
-                if self.mouse_pressed {
-                    self.camera_controller.process_mouse(delta.0, delta.1);
+            Event::DeviceEvent { event, .. } => match event {
+                DeviceEvent::MouseMotion { delta } => {
+                    if self.mouse_pressed {
+                        self.camera_controller.process_mouse(delta.0, delta.1);
+                    }
+                    true
                 }
-                true
-            }
+
+                _ => false,
+            },
+
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::MouseInput {
+                    button: winit::event::MouseButton::Left,
+                    state,
+                    ..
+                } => {
+                    self.mouse_pressed = *state == ElementState::Pressed;
+                    true
+                }
+
+                WindowEvent::KeyboardInput {
+                    input:
+                        KeyboardInput {
+                            virtual_keycode: Some(key),
+                            state,
+                            ..
+                        },
+                    ..
+                } => self.camera_controller.process_keyboard(*key, *state),
+
+                _ => false,
+            },
 
             _ => false,
         }
