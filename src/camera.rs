@@ -16,28 +16,38 @@ const SAFE_FRAC_PI_2: f32 = FRAC_PI_2 - 0.0001;
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
-    pub proj: [[f32; 4]; 4],
-    pub proj_inv: [[f32; 4]; 4],
-    pub view: [[f32; 4]; 4],
-    pub pos: [f32; 4],
+    pub pos: [f32; 3],
+    _padding: u32,
+    pub dir: [f32; 3],
+    _padding2: u32,
+    pub right: [f32; 3],
+    _padding3: u32,
+    pub up: [f32; 3],
+    pub aspect: f32,
 }
 
 impl CameraUniform {
     pub fn new() -> Self {
         Self {
-            proj: Matrix4::identity().into(),
-            proj_inv: Matrix4::identity().into(),
-            view: Matrix4::identity().into(),
-            pos: [0.0; 4],
+            pos: [0.0; 3],
+            _padding: 0,
+            dir: [0.0; 3],
+            _padding2: 0,
+            right: [0.0; 3],
+            _padding3: 0,
+            up: [0.0, 1.0, 0.0],
+            aspect: 1.0,
         }
     }
 
     pub fn update_view_proj(&mut self, camera: &Camera, projection: &Projection) {
-        let proj = projection.calc_matrix();
-        self.proj = proj.into();
-        self.proj_inv = proj.invert().unwrap().into();
-        self.view = camera.calc_matrix().into();
-        self.pos = camera.position.to_homogeneous().into();
+        self.pos = camera.position.into();
+        let direction = camera.direction();
+        let right = direction.cross(Vector3::new(0.0, 1.0, 0.0)).normalize();
+        self.dir = direction.into();
+        self.right = right.into();
+        self.up = direction.cross(right).normalize().into();
+        self.aspect = projection.aspect;
     }
 }
 
@@ -69,6 +79,12 @@ impl Camera {
             Vector3::new(cos_pitch * cos_yaw, sin_pitch, cos_pitch * sin_yaw).normalize(),
             Vector3::unit_y(),
         )
+    }
+
+    pub fn direction(&self) -> Vector3<f32> {
+        let (sin_pitch, cos_pitch) = self.pitch.0.sin_cos();
+        let (sin_yaw, cos_yaw) = self.yaw.0.sin_cos();
+        Vector3::new(cos_pitch * cos_yaw, sin_pitch, cos_pitch * sin_yaw).normalize()
     }
 }
 

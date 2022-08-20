@@ -1,5 +1,3 @@
-use std::io::Cursor;
-
 use anyhow::*;
 use image::GenericImageView;
 use wgpu::util::DeviceExt;
@@ -20,82 +18,61 @@ impl Texture {
         bytes: &[u8],
         label: &str,
     ) -> Result<Self> {
-        let img = image::io::Reader::new(Cursor::new(bytes));
-        Self::from_image(device, queue, img, label)
+        let img = image::load_from_memory(bytes)?;
+        Self::from_image(device, queue, &img, label)
     }
 
-    pub fn from_image<T>(
+    pub fn from_image(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        img_reader: image::io::Reader<T>,
+        img: &image::DynamicImage,
         label: &str,
-    ) -> Result<Self>
-    where
-        T: std::io::BufRead + std::io::Seek,
-    {
-        let img_reader = img_reader.with_guessed_format()?;
-        let format = img_reader.format().context("Invalid image format")?;
-        let img = img_reader.decode()?;
-        let rgba = img.to_rgba8();
+    ) -> Result<Self> {
+        use image::DynamicImage;
+        use wgpu::TextureFormat;
+
         let dimensions = img.dimensions();
 
-        let size = match format {
-            image::ImageFormat::OpenExr | image::ImageFormat::Hdr => wgpu::Extent3d {
-                width: dimensions.0 / 4,
-                height: dimensions.1 / 3,
-                depth_or_array_layers: 6,
-            },
-            _ => wgpu::Extent3d {
-                width: dimensions.0,
-                height: dimensions.1,
-                depth_or_array_layers: 1,
-            },
+        let size = wgpu::Extent3d {
+            width: dimensions.0,
+            height: dimensions.1,
+            depth_or_array_layers: 1,
         };
 
+        let mut img_type = format!("{:?}", img);
+        img_type.truncate(50);
+        img_type += "...";
+        log::info!(
+            "Size: {}, Dimensions: {:?}, Type: {}",
+            img.as_bytes().len(),
+            dimensions,
+            img_type
+        );
         let texture = device.create_texture_with_data(
             &queue,
             &wgpu::TextureDescriptor {
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                format: match img {
+                    DynamicImage::ImageRgba8(_) => Some(TextureFormat::Rgba8UnormSrgb),
+                    DynamicImage::ImageRgba32F(_) => Some(TextureFormat::Rgba32Float),
+                    _ => None,
+                }
+                .context(format!("Invalid image format: {}", img_type))?,
                 label: Some(label),
                 mip_level_count: 1,
                 sample_count: 1,
                 size,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             },
-            &rgba,
+            img.as_bytes(),
         );
 
-        /*queue.write_texture(
-            wgpu::ImageCopyTexture {
-                aspect: wgpu::TextureAspect::All,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                texture: &texture,
-            },
-            &rgba,
-            wgpu::ImageDataLayout {
-                bytes_per_row: std::num::NonZeroU32::new(4 * dimensions.0),
-                offset: 0,
-                rows_per_image: std::num::NonZeroU32::new(dimensions.1),
-            },
-            size,
-        );*/
-
-        let view = texture.create_view(&wgpu::TextureViewDescriptor {
-            dimension: match format {
-                image::ImageFormat::OpenExr | image::ImageFormat::Hdr => {
-                    Some(wgpu::TextureViewDimension::Cube)
-                }
-                _ => None,
-            },
-            ..Default::default()
-        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()

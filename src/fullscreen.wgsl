@@ -1,8 +1,9 @@
 struct CameraUniform {
-    proj: mat4x4<f32>,
-    proj_inv: mat4x4<f32>,
-    view: mat4x4<f32>,
-    pos: vec4<f32>,
+    pos: vec3<f32>,
+    dir: vec3<f32>,
+    right: vec3<f32>,
+    up: vec3<f32>,
+    aspect: f32,
 };
 @group(1)
 @binding(0)
@@ -19,7 +20,7 @@ fn vs_main(
 ) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = vec4<f32>(pos, 1.0);
-    out.tex_coords = vec2<f32>(0.5 * (pos.x + 1.0), 0.5 * (-pos.y + 1.0));
+    out.tex_coords = vec2<f32>(pos.x, -pos.y);
     return out;
 }
 
@@ -76,7 +77,7 @@ var s_last_frame: sampler;
 
 @group(0)
 @binding(10)
-var t_skybox: texture_cube<f32>;
+var t_skybox: texture_2d<f32>;
 @group(0)
 @binding(11)
 var s_skybox: sampler;
@@ -85,95 +86,68 @@ var s_skybox: sampler;
 @binding(0)
 var<uniform> frame_count: f32;
 
-let near: f32 = 0.1; 
-let far: f32  = 100.0; 
-  
-fn linearize_depth(depth: f32) -> f32 {
-    var z = depth * 2.0 - 1.0; // back to NDC 
-    return (2.0 * near) / (far + near - z * (far - near));	
+let NUMBER_OF_STEPS: i32 = 128;
+let MINIMUM_HIT_DISTANCE: f32 = 0.001;
+let MAXIMUM_TRACE_DISTANCE: f32 = 1000.0;
+let EPSILON: f32 = 0.0001;
+
+fn sd_sphere(p: vec3<f32>, r: f32) -> f32 {
+    return length(p) - r;
 }
 
-fn perpendicular(input: vec3<f32>) -> vec3<f32> {
-    let sx = sign((sign(input.x) + 0.5) * (sign(input.z) + 0.5));
-    let sy = sign((sign(input.y) + 0.5) * (sign(input.z) + 0.5));
-    return vec3<f32>(
-        sx * input.z,
-        sy * input.z, 
-        -sx * input.x - sy * input.y);
+fn sd_box(p: vec3<f32>, b: vec3<f32>) -> f32 {
+    let q = abs(p) - b;
+    return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
 }
 
-fn cos_hemisphere(rand: vec2<f32>, normal: vec3<f32>) -> vec3<f32> {
-    let bitangent = normalize(perpendicular(normal));
-    let tangent = cross(bitangent, normal);
-    let r = sqrt(rand.x);
-    let phi = 2.0 * 3.14159265 * rand.y;
+fn op_union(d1: f32, d2: f32) -> f32 {
+    return min(d1, d2);
+}
+
+fn op_difference(d1: f32, d2: f32) -> f32 {
+    return max(d1, -d2);
+}
+
+fn op_intersect(d1: f32, d2: f32) -> f32 {
+    return max(d1, d2);
+}
+
+fn scene(p: vec3<f32>) -> f32 {
+    return op_intersect(sd_box(p, vec3<f32>(1.0, 0.8, 0.7)), sd_sphere(p, 0.9));
+}
+
+fn estimate_normal(p: vec3<f32>) -> vec3<f32> {
+    let k = vec2<f32>(1.0, -1.0);
+    return normalize(
+        k.xyy * scene(p + k.xyy * EPSILON) +
+        k.yyx * scene(p + k.yyx * EPSILON) +
+        k.yxy * scene(p + k.yxy * EPSILON) +
+        k.xxx * scene(p + k.xxx * EPSILON)
+    );
+}
+
+fn ray_march(ro: vec3<f32>, rd: vec3<f32>) -> vec3<f32> {
+    var total_distance_travelled = 0.0;
     
-    return tangent * (r * cos(phi)) + bitangent * (r * sin(phi)) + normal * sqrt(max(0.0, 1.0 - rand.x));
-}
-
-fn sample_light(position: vec3<f32>, direction: vec3<f32>, offset: vec3<f32>) -> f32 {
-    var position = position + offset;
-    var step_size = 0.01;
-    for (var s = 0; s < 12; s++) {
-        position += normalize(direction) * step_size;
-        var clip_pos = camera.proj * camera.view * vec4<f32>(position, 1.0);
-        var ndc_pos = clip_pos.xyz / clip_pos.w;
-        ndc_pos.y = -ndc_pos.y;
-        var screen_pos = (ndc_pos.xyz + 1.0) / 2.0;
-        if (screen_pos.x < 0.0 || screen_pos.y < 0.0 || screen_pos.x > 1.0 || screen_pos.y > 1.0) {
-            break; 
+    for (var i = 0; i < NUMBER_OF_STEPS; i++) {
+        let current_position = ro + total_distance_travelled * rd;
+        let distance_to_closest = scene(current_position);
+        if (distance_to_closest < MINIMUM_HIT_DISTANCE) {
+            let albedo = estimate_normal(current_position);
+            return (albedo + 1.0) / 2.0;
         }
-        var screen_depth = linearize_depth(ndc_pos.z);
-        var light = textureSample(t_last_frame, s_last_frame, screen_pos.xy);
-        var depth = textureSample(t_depth, s_depth, screen_pos.xy);
-        var normal = textureSample(t_normal, s_normal, screen_pos.xy);
-        var backface = clamp(dot(-normal.xyz, direction) * 100.0, 0.0, 1.0);
-;
-        if (screen_depth > depth.r && screen_depth < depth.g) {
-            return light.r * backface;
-        } else if (screen_depth > depth.b && screen_depth < depth.a) {
-            return 0.0;
+        if (total_distance_travelled > MAXIMUM_TRACE_DISTANCE) {
+            break;
         }
-        step_size *= 2.0;
+        total_distance_travelled += distance_to_closest;
     }
-    return 0.0;
+    return vec3<f32>(0.0);
 }
-
-fn noise(pos: vec2<f32>) -> f32 {
-    let frame = frame_count % 64.0;
-    let frame = 0.0;
-    let x = pos.x + 5.588238f * frame;
-    let y = pos.y + 5.588238f * frame;
-    return (52.9829189 * ((0.06711056 * x + 0.00583715 * y) % 1.0)) % 1.0;
-}
-
+  
 @fragment
 fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
-    var depth = textureSample(t_depth, s_depth, in.tex_coords.xy);
-    var albedo = textureSample(t_albedo, s_albedo, in.tex_coords.xy).xyz;
-    var position = textureSample(t_position, s_position, in.tex_coords.xy).xyz;
-    var normal = textureSample(t_normal, s_normal, in.tex_coords.xy).xyz;
-    let noise = noise(in.tex_coords * vec2<f32>(800.0, 600.0));
-    let weighted_normal = normalize(cos_hemisphere(vec2<f32>(noise, noise), normal));
-
-    let inv_model_view = transpose(mat3x3<f32>(camera.view.x.xyz, camera.view.y.xyz, camera.view.z.xyz));
-    let unprojected = camera.proj_inv * vec4<f32>(in.tex_coords * 2.0 - 1.0, 1.0, 1.0);
-    var albedo = vec3<f32>((dot(normal, vec3<f32>(0.0, 1.0, 0.0)) + 1.0) / 2.0);
-    for (var i: i32 = 0; i < i32(arrayLength(&lights)); i++) {
-        albedo = albedo + lights[i].colour * 0.5;
-    }
-    //return vec4<f32>(vec3<f32>(total_light), 1.0);
-    //return vec4<f32>(depth.g - depth.r, depth.a - depth.b, 0.0, 1.0);
-    //return depth;
-    //var clip_pos = camera.view_proj * vec4<f32>(position, 1.0);
-    //var ndc_pos = clip_pos.xyz / clip_pos.w;
-    //ndc_pos.y = -ndc_pos.y;
-    //var screen_pos = (ndc_pos.xyz + 1.0) / 2.0;
-    //var screen_depth = linearize_depth(ndc_pos.z);
-    //return vec4<f32>(vec3<f32>(depth.r), 1.0);
-    return vec4<f32>(albedo + vec3<f32>(sample_light(position, weighted_normal, normal * (0.001 + depth.r * 0.1))), 1.0);
-    //return textureSample(t_skybox, s_skybox, inv_model_view * unprojected.xyz);
-    //return vec4<f32>((weighted_normal + 1.0) / 2.0, 1.0);
-    //return vec4<f32>((normal + 1.0) / 2.0, 1.0);
-    //return vec4<f32>(in.tex_coords, 0.0, 1.0);
+    let p = vec2<f32>(in.tex_coords.x * camera.aspect, in.tex_coords.y);
+    let ray_dir = normalize(p.x * camera.right + p.y * camera.up + 2.0 * camera.dir);
+    let albedo = ray_march(camera.pos, ray_dir);
+    return vec4<f32>(albedo, 1.0);
 }

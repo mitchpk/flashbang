@@ -31,8 +31,6 @@ pub struct State {
     queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
-    render_pipeline: wgpu::RenderPipeline,
-    diffuse_bind_group: wgpu::BindGroup,
     camera: Camera,
     camera_projection: Projection,
     camera_uniform: CameraUniform,
@@ -49,13 +47,9 @@ pub struct State {
     fullscreen_vertex_buffer: wgpu::Buffer,
     fullscreen_index_buffer: wgpu::Buffer,
     albedo_texture: Texture,
-    peel_pipeline: wgpu::RenderPipeline,
-    peel_bind_group: wgpu::BindGroup,
     first_depth_texture: Texture,
     position_texture: Texture,
     normal_texture: Texture,
-    depth_pipeline: wgpu::RenderPipeline,
-    obj_model: model::Model,
     last_frame_texture: Texture,
     frame_count: f32,
     frame_count_buffer: wgpu::Buffer,
@@ -152,59 +146,13 @@ impl State {
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         );
 
-        let skybox_texture = resources::load_texture("lago_disola_1k.hdr", &device, &queue)
+        let skybox_texture = resources::load_texture("lago_disola_1k.exr", &device, &queue)
             .await
             .unwrap();
 
         let diffuse_bytes = include_bytes!("happy-tree.png");
         let diffuse_texture =
             Texture::from_bytes(&device, &queue, diffuse_bytes, "diffuse_texture").unwrap();
-
-        let geometry_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("geometry_bind_group_layout"),
-            });
-
-        let peel_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("peel_bind_group_layout"),
-            });
 
         let fullscreen_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -305,8 +253,8 @@ impl State {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::Cube,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         },
                         count: None,
                     },
@@ -314,42 +262,12 @@ impl State {
                         // Skybox sampler
                         binding: 11,
                         visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                         count: None,
                     },
                 ],
                 label: Some("fullscreen_bind_group_layout"),
             });
-
-        let geometry_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &geometry_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
-                },
-            ],
-            label: Some("geometry_bind_group"),
-        });
-
-        let peel_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &peel_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&first_depth_texture.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&first_depth_texture.sampler),
-                },
-            ],
-            label: Some("peel_bind_group"),
-        });
 
         let fullscreen_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &fullscreen_bind_group_layout,
@@ -406,11 +324,6 @@ impl State {
             label: Some("fullscreen_bind_group"),
         });
 
-        let obj_model =
-            resources::load_model("cubeflat.obj", &device, &queue, &geometry_bind_group_layout)
-                .await
-                .unwrap();
-
         let camera = Camera::new((0.0, 0.0, 0.0), cgmath::Deg(0.0), cgmath::Deg(0.0));
         let camera_projection =
             Projection::new(config.width, config.height, cgmath::Deg(45.0), 0.1, 100.0);
@@ -448,7 +361,7 @@ impl State {
             label: Some("camera_bind_group"),
         });
 
-        let camera_controller = CameraController::new(8.0, 0.002);
+        let camera_controller = CameraController::new(2.0, 0.002);
 
         let frame_count_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera_buffer"),
@@ -524,39 +437,10 @@ impl State {
             label: Some("lights_bind_group"),
         });
 
-        let geometry_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Geometry Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("geometry.wgsl").into()),
-        });
-
-        let depth_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Depth Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("depth.wgsl").into()),
-        });
-
-        let peel_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Peel Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("peel.wgsl").into()),
-        });
-
         let fullscreen_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fullscreen Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("fullscreen.wgsl").into()),
         });
-
-        let geometry_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Geometry Pipeline Layout"),
-                bind_group_layouts: &[&geometry_bind_group_layout, &camera_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
-        let depth_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Depth Pipeline Layout"),
-                bind_group_layouts: &[&camera_bind_group_layout],
-                push_constant_ranges: &[],
-            });
 
         let fullscreen_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -569,173 +453,6 @@ impl State {
                 ],
                 push_constant_ranges: &[],
             });
-
-        let geometry_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Geometry Pipeline"),
-            layout: Some(&geometry_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &geometry_shader,
-                entry_point: "vs_main",
-                buffers: &[
-                    model::ModelVertex::desc(),
-                    crate::instance::InstanceRaw::desc(),
-                ],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &geometry_shader,
-                entry_point: "fs_main",
-                targets: &[
-                    Some(wgpu::ColorTargetState {
-                        // Albedo
-                        format: config.format,
-                        blend: Some(wgpu::BlendState::REPLACE),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    Some(wgpu::ColorTargetState {
-                        // Position
-                        format: wgpu::TextureFormat::Rgba32Float,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    Some(wgpu::ColorTargetState {
-                        // Normal
-                        format: wgpu::TextureFormat::Rgba32Float,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                ],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: Texture::DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-        });
-
-        let depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Depth Pipeline"),
-            layout: Some(&depth_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &depth_shader,
-                entry_point: "vs_main",
-                buffers: &[
-                    model::ModelVertex::desc(),
-                    crate::instance::InstanceRaw::desc(),
-                ],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &depth_shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    // Depth first pass
-                    format: wgpu::TextureFormat::Rgba16Float,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Min,
-                        },
-                        alpha: wgpu::BlendComponent::REPLACE,
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None, //Some(wgpu::Face::Back),
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: Texture::DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Always,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-        });
-
-        let peel_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Peel Render Pipeline"),
-            layout: Some(&geometry_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &peel_shader,
-                entry_point: "vs_main",
-                buffers: &[
-                    model::ModelVertex::desc(),
-                    crate::instance::InstanceRaw::desc(),
-                ],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &peel_shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    // Depth
-                    format: wgpu::TextureFormat::Rgba16Float,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Min,
-                        },
-                        alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Min,
-                        },
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None, //Some(wgpu::Face::Back),
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: Texture::DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Always,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-        });
 
         let fullscreen_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Fullscreen Render Pipeline"),
@@ -836,8 +553,6 @@ impl State {
             queue,
             config,
             size,
-            render_pipeline: geometry_pipeline,
-            diffuse_bind_group: geometry_bind_group,
             camera,
             camera_projection,
             camera_uniform,
@@ -854,13 +569,9 @@ impl State {
             fullscreen_vertex_buffer,
             fullscreen_index_buffer,
             albedo_texture,
-            peel_pipeline,
-            peel_bind_group,
             first_depth_texture,
             position_texture,
             normal_texture,
-            depth_pipeline,
-            obj_model,
             last_frame_texture,
             frame_count: 0.0,
             frame_count_buffer,
@@ -969,107 +680,6 @@ impl State {
                 label: Some("Render Encoder"),
             });
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: &self.albedo_texture.view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: true,
-                        },
-                    }),
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: &self.position_texture.view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: true,
-                        },
-                    }),
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: &self.normal_texture.view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: true,
-                        },
-                    }),
-                ],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_texture.view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: true,
-                    }),
-                    stencil_ops: None,
-                }),
-            });
-
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
-            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            render_pass
-                .draw_mesh_instanced(&self.obj_model.meshes[0], 0..self.instances.len() as u32);
-        }
-        {
-            let mut depth_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Peel Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.first_depth_texture.view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
-                        store: true,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_texture.view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: true,
-                    }),
-                    stencil_ops: None,
-                }),
-            });
-
-            depth_pass.set_pipeline(&self.depth_pipeline);
-            depth_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            depth_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            depth_pass
-                .draw_mesh_instanced(&self.obj_model.meshes[0], 0..self.instances.len() as u32);
-        }
-        {
-            let mut peel_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Peel Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.peel_depth_texture.view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
-                        store: true,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_texture.view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: true,
-                    }),
-                    stencil_ops: None,
-                }),
-            });
-
-            peel_pass.set_pipeline(&self.peel_pipeline);
-            peel_pass.set_bind_group(0, &self.peel_bind_group, &[]);
-            peel_pass.set_bind_group(1, &self.camera_bind_group, &[]);
-            peel_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            peel_pass
-                .draw_mesh_instanced(&self.obj_model.meshes[0], 0..self.instances.len() as u32);
-        }
-        {
             let mut fullscreen_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Fullscreen Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1100,26 +710,6 @@ impl State {
             );
             fullscreen_pass.draw_indexed(0..FULLSCREEN_INDICES.len() as u32, 0, 0..1);
         }
-
-        encoder.copy_texture_to_texture(
-            wgpu::ImageCopyTexture {
-                texture: &output.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::ImageCopyTexture {
-                texture: &self.last_frame_texture.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-                width: self.config.width,
-                height: self.config.height,
-                depth_or_array_layers: 1,
-            },
-        );
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
