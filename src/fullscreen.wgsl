@@ -77,7 +77,7 @@ var s_last_frame: sampler;
 
 @group(0)
 @binding(10)
-var t_skybox: texture_2d<f32>;
+var t_skybox: texture_cube<f32>;
 @group(0)
 @binding(11)
 var s_skybox: sampler;
@@ -128,6 +128,7 @@ fn estimate_normal(p: vec3<f32>) -> vec3<f32> {
 
 fn ray_march(ro: vec3<f32>, rd: vec3<f32>) -> vec3<f32> {
     var total_distance_travelled = 0.0;
+    let skybox = textureSample(t_skybox, s_skybox, rd).xyz; 
     
     for (var i = 0; i < NUMBER_OF_STEPS; i++) {
         let current_position = ro + total_distance_travelled * rd;
@@ -141,13 +142,14 @@ fn ray_march(ro: vec3<f32>, rd: vec3<f32>) -> vec3<f32> {
         }
         total_distance_travelled += distance_to_closest;
     }
-    return vec3<f32>(0.0);
+    
+    return skybox;
 }
   
 @fragment
 fn fs_main(in: FragmentInput) -> @location(0) vec4<f32> {
     let p = vec2<f32>(in.tex_coords.x * camera.aspect, in.tex_coords.y);
-    let ray_dir = normalize(p.x * camera.right + p.y * camera.up + 2.0 * camera.dir);
+    let ray_dir = normalize(p.x * camera.right + p.y * camera.up + 1.5 * camera.dir);
     let albedo = ray_march(camera.pos, ray_dir);
     return vec4<f32>(albedo, 1.0);
 }

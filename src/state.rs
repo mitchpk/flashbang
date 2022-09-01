@@ -100,7 +100,11 @@ impl State {
 
         let first_depth_texture = Texture::create_color_texture(
             &device,
-            &config,
+            wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
             "first_depth_texture",
             wgpu::TextureFormat::Rgba16Float,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -108,7 +112,11 @@ impl State {
 
         let peel_depth_texture = Texture::create_color_texture(
             &device,
-            &config,
+            wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
             "peel_depth_texture",
             wgpu::TextureFormat::Rgba16Float,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -116,7 +124,11 @@ impl State {
 
         let albedo_texture = Texture::create_color_texture(
             &device,
-            &config,
+            wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
             "albedo_texture",
             config.format,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -124,7 +136,11 @@ impl State {
 
         let position_texture = Texture::create_color_texture(
             &device,
-            &config,
+            wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
             "position_texture",
             wgpu::TextureFormat::Rgba32Float,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -132,7 +148,11 @@ impl State {
 
         let normal_texture = Texture::create_color_texture(
             &device,
-            &config,
+            wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
             "normal_texture",
             wgpu::TextureFormat::Rgba32Float,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -140,15 +160,31 @@ impl State {
 
         let last_frame_texture = Texture::create_color_texture(
             &device,
-            &config,
+            wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
             "last_frame_texture",
             config.format,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         );
 
-        let skybox_texture = resources::load_texture("lago_disola_1k.exr", &device, &queue)
+        let panorama_texture = resources::load_texture("lago_disola_4k.exr", &device, &queue)
             .await
             .unwrap();
+
+        let skybox_texture = Texture::create_cubemap_texture(
+            &device,
+            wgpu::Extent3d {
+                width: 2048,
+                height: 2048,
+                depth_or_array_layers: 6,
+            },
+            "skybox_texture",
+            config.format,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
 
         let diffuse_bytes = include_bytes!("happy-tree.png");
         let diffuse_texture =
@@ -253,8 +289,8 @@ impl State {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::Cube,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         },
                         count: None,
                     },
@@ -262,7 +298,7 @@ impl State {
                         // Skybox sampler
                         binding: 11,
                         visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
                 ],
@@ -543,7 +579,176 @@ impl State {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        let depth_texture = Texture::create_depth_texture(&device, &config, "depth_texture");
+        let depth_texture = Texture::create_depth_texture(
+            &device,
+            wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            "depth_texture",
+        );
+
+        let skybox_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("skybox_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        count: None,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        count: None,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        count: None,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                    },
+                ],
+            });
+
+        let skybox_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("skybox_pipeline_layout"),
+                bind_group_layouts: &[&skybox_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let skybox_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("skybox_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("skybox.wgsl").into()),
+        });
+
+        let skybox_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("skybox_pipeline"),
+            layout: Some(&skybox_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &skybox_shader,
+                entry_point: "vs_main",
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: (std::mem::size_of::<f32>() * 3) as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        offset: 0,
+                        shader_location: 0,
+                        format: wgpu::VertexFormat::Float32x3,
+                    }],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &skybox_shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    // Final view
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+        });
+
+        let current_face_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("current_face_buffer"),
+            contents: bytemuck::bytes_of(&0u32),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let skybox_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("skybox_bind_group"),
+            layout: &skybox_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&panorama_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&panorama_texture.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &current_face_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+            ],
+        });
+
+        for i in 0..6u32 {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Skybox Render Encoder"),
+            });
+            {
+                let view = &skybox_texture
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor {
+                        base_array_layer: i,
+                        array_layer_count: Some(std::num::NonZeroU32::new(1).unwrap()),
+                        ..Default::default()
+                    });
+
+                let mut skybox_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Skybox Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.0,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 1.0,
+                            }),
+                            store: true,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                });
+
+                skybox_pass.set_pipeline(&skybox_pipeline);
+                skybox_pass.set_bind_group(0, &skybox_bind_group, &[]);
+                skybox_pass.set_vertex_buffer(0, fullscreen_vertex_buffer.slice(..));
+                skybox_pass
+                    .set_index_buffer(fullscreen_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                skybox_pass.draw_indexed(0..FULLSCREEN_INDICES.len() as u32, 0, 0..1);
+            }
+
+            queue.write_buffer(&current_face_buffer, 0, bytemuck::bytes_of(&i));
+            queue.submit(std::iter::once(encoder.finish()));
+        }
 
         Self {
             instance,
@@ -590,11 +795,22 @@ impl State {
             self.surface.configure(&self.device, &self.config);
             self.camera_projection
                 .resize(new_size.width, new_size.height);
-            self.depth_texture =
-                Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
+            self.depth_texture = Texture::create_depth_texture(
+                &self.device,
+                wgpu::Extent3d {
+                    width: self.config.width,
+                    height: self.config.height,
+                    depth_or_array_layers: 1,
+                },
+                "depth_texture",
+            );
             self.peel_depth_texture = Texture::create_color_texture(
                 &self.device,
-                &self.config,
+                wgpu::Extent3d {
+                    width: self.config.width,
+                    height: self.config.height,
+                    depth_or_array_layers: 1,
+                },
                 "peel_depth_texture",
                 wgpu::TextureFormat::Rgba32Float,
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -612,6 +828,12 @@ impl State {
                     true
                 }
 
+                DeviceEvent::Key(KeyboardInput {
+                    virtual_keycode: Some(key),
+                    state,
+                    ..
+                }) => self.camera_controller.process_keyboard(*key, *state),
+
                 _ => false,
             },
 
@@ -624,16 +846,6 @@ impl State {
                     self.mouse_pressed = *state == ElementState::Pressed;
                     true
                 }
-
-                WindowEvent::KeyboardInput {
-                    input:
-                        KeyboardInput {
-                            virtual_keycode: Some(key),
-                            state,
-                            ..
-                        },
-                    ..
-                } => self.camera_controller.process_keyboard(*key, *state),
 
                 _ => false,
             },

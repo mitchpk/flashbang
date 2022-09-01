@@ -39,15 +39,6 @@ impl Texture {
             depth_or_array_layers: 1,
         };
 
-        let mut img_type = format!("{:?}", img);
-        img_type.truncate(50);
-        img_type += "...";
-        log::info!(
-            "Size: {}, Dimensions: {:?}, Type: {}",
-            img.as_bytes().len(),
-            dimensions,
-            img_type
-        );
         let texture = device.create_texture_with_data(
             &queue,
             &wgpu::TextureDescriptor {
@@ -57,7 +48,7 @@ impl Texture {
                     DynamicImage::ImageRgba32F(_) => Some(TextureFormat::Rgba32Float),
                     _ => None,
                 }
-                .context(format!("Invalid image format: {}", img_type))?,
+                .context("Invalid image format")?,
                 label: Some(label),
                 mip_level_count: 1,
                 sample_count: 1,
@@ -85,17 +76,7 @@ impl Texture {
         })
     }
 
-    pub fn create_depth_texture(
-        device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
-        label: &str,
-    ) -> Self {
-        let size = wgpu::Extent3d {
-            width: config.width,
-            height: config.height,
-            depth_or_array_layers: 1,
-        };
-
+    pub fn create_depth_texture(device: &wgpu::Device, size: wgpu::Extent3d, label: &str) -> Self {
         let desc = wgpu::TextureDescriptor {
             label: Some(label),
             size,
@@ -131,17 +112,11 @@ impl Texture {
 
     pub fn create_color_texture(
         device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
+        size: wgpu::Extent3d,
         label: &str,
         format: wgpu::TextureFormat,
         usage: wgpu::TextureUsages,
     ) -> Self {
-        let size = wgpu::Extent3d {
-            width: config.width,
-            height: config.height,
-            depth_or_array_layers: 1,
-        };
-
         let desc = wgpu::TextureDescriptor {
             label: Some(label),
             size,
@@ -160,6 +135,49 @@ impl Texture {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            compare: None,
+            lod_min_clamp: -100.0,
+            lod_max_clamp: 100.0,
+            ..Default::default()
+        });
+
+        Self {
+            texture,
+            view,
+            sampler,
+        }
+    }
+
+    pub fn create_cubemap_texture(
+        device: &wgpu::Device,
+        size: wgpu::Extent3d,
+        label: &str,
+        format: wgpu::TextureFormat,
+        usage: wgpu::TextureUsages,
+    ) -> Self {
+        let desc = wgpu::TextureDescriptor {
+            label: Some(label),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+        };
+
+        let texture = device.create_texture(&desc);
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::Cube),
+            ..Default::default()
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             compare: None,
